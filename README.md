@@ -1,6 +1,6 @@
 # ReturnShield AI — Autonomous E-Commerce Returns & Refund Investigation System
 
-> **Step 1: Foundational Architecture & Operational Dashboard**
+> **Step 3: Proper RAG + Persistent Memory Architecture**
 
 ---
 
@@ -8,91 +8,65 @@
 
 E-commerce businesses process thousands of return and refund requests daily. Traditional manual investigation of claims—verifying order history, checking serial returners, validating product warranties, inspecting damaged product photos, and matching store refund policies—is slow, costly, and vulnerable to return fraud (e.g., wardrobing, empty box returns, damaged claims).
 
-**ReturnShield AI** is designed as an enterprise-grade agentic AI platform that automates returns investigation end-to-end. 
-
-In **Step 1**, we have built the foundational infrastructure:
-- Database schema for all core e-commerce entities
-- REST API layer with full Pydantic request validation
-- Service layer designed to serve as tools for future AI agents
-- Real-time dark-themed operational dashboard for human supervisors
-- Seed dataset with realistic customers, catalog products, orders, return claims, and evidence files.
+**ReturnShield AI** is an enterprise-grade agentic AI platform that automates returns investigation end-to-end.
 
 ---
 
-## 2. Step 1 Architecture Overview
+## 2. Step 3 Architecture Overview
+
+In **Step 3**, we introduced:
+1. **Proper Vector RAG Pipeline (ChromaDB)** for policy retrieval instead of full document reading.
+2. **Persistent Investigation Memory (SQLite)** for long-term customer risk tracking across claims.
 
 ```
-User / Admin Supervisor
+Customer Claim Submission / Start AI Investigation
        │
        ▼
 React Dashboard (Vite + Tailwind CSS + Lucide Icons)
-       │ HTTP / REST API (CORS enabled)
+       │ POST /api/returns/{case_id}/investigate
        ▼
 FastAPI Backend App (Python 3.10+)
        │
-       ├── Service Layer (app/services/investigation_service.py)
-       │    └── Modular functions prepared to be exported as AI Agent Tools
-       │
-       ├── Uploads Manager (/uploads static mount for evidence files)
-       │
        ▼
-SQLite Database (SQLAlchemy ORM models)
+LangGraph Orchestrator (app/agents/graph.py)
+       │
+       ├── 1. Order Agent      (app/agents/order_agent.py)
+       ├── 2. Customer Agent   (app/agents/customer_agent.py & app/memory/memory_service.py)
+       ├── 3. Policy Agent     (app/agents/policy_agent.py & app/rag/retriever.py ──> ChromaDB Vector Store)
+       ├── 4. Fraud Agent      (app/agents/fraud_agent.py)
+       ├── 5. Risk Agent       (app/agents/risk_agent.py)
+       └── 6. Decision Agent   (app/agents/decision_agent.py)
+       │
+       ├── Service Tools Layer (app/services/investigation_service.py)
+       │
+       ├── Persistence: InvestigationMemory (SQLite)
+       └── Vector Store: ChromaDB (backend/chroma_db)
 ```
 
 ---
 
-## 3. Database Entities
+## 3. RAG Architecture & Vector Indexing
 
-### Customer (`customers`)
-- `id`: Integer Primary Key
-- `name`: Customer full name
-- `email`: Unique email address
-- `phone`: Contact phone number
-- `created_at`: Registration timestamp
-
-### Product (`products`)
-- `id`: Integer Primary Key
-- `name`: Product title
-- `category`: Category (e.g., Smartphones, Audio, Laptops)
-- `price`: Unit price in USD
-- `seller`: Seller / Authorized distributor name
-- `warranty_period`: Warranty term (e.g., "12 Months", "24 Months")
-- `created_at`: Timestamp
-
-### Order (`orders`)
-- `id`: Integer Primary Key
-- `order_number`: Unique identifier (e.g., `ORD-10024`)
-- `customer_id`: Foreign Key (`customers.id`)
-- `product_id`: Foreign Key (`products.id`)
-- `order_date`: Date order was placed
-- `delivery_date`: Date delivered (nullable)
-- `amount`: Order total amount
-- `status`: Order status (`Delivered`, `In Transit`, `Returned`)
-
-### ReturnCase (`return_cases`)
-- `id`: Integer Primary Key
-- `case_number`: Unique case ID (e.g., `RET-2026-0001-A9F1`)
-- `order_id`: Foreign Key (`orders.id`)
-- `customer_id`: Foreign Key (`customers.id`)
-- `reason`: Claim category (`Damaged product`, `Defective item`, etc.)
-- `description`: Detailed customer complaint statement
-- `status`: Claim status (`Pending`, `Approved`, `Rejected`, `Needs Human Review`)
-- `risk_level`: Fraud/risk classification (`Low`, `Medium`, `High`, `Unassessed`)
-- `final_decision`: Summary determination string
-- `created_at`: Creation timestamp
-- `updated_at`: Last modification timestamp
-
-### Evidence (`evidence`)
-- `id`: Integer Primary Key
-- `return_case_id`: Foreign Key (`return_cases.id`)
-- `file_name`: Original uploaded filename
-- `file_path`: Relative URL path (`/uploads/filename`)
-- `evidence_type`: MIME type (`image/jpeg`, `image/png`, `image/svg+xml`)
-- `uploaded_at`: Upload timestamp
+### Why RAG for Return Policy Retrieval?
+Return policies can be large, change frequently, and vary by product category. Sending entire policy documents in LLM prompts is wasteful and expensive. With RAG (Retrieval-Augmented Generation):
+- `knowledge/return_policy.md` is chunked by markdown section headers into structured policy passages with metadata (`source`, `document_type`, `section`).
+- Chunks are embedded and persisted in a local **ChromaDB** collection (`return_policy` stored in `./chroma_db`).
+- The **Policy Agent** formulates targeted semantic queries (e.g., `"Return policy for damaged smartphone delivered 3 days ago"`), retrieves the top 4 matching policy chunks, and evaluates eligibility against retrieved evidence.
 
 ---
 
-## 4. Backend REST API Endpoints
+## 4. Persistent Memory Architecture
+
+### Why Persistent Memory?
+Each return investigation should not start from scratch without historical context.
+- **State vs. Memory**:
+  - *LangGraph State*: Temporary typed dictionary passed between agent nodes during a single investigation run.
+  - *Persistent Memory*: High-value investigation observations stored in SQLite (`investigation_memories` table) that persist across server restarts and future claims.
+- **Customer Agent Memory Integration**: When investigating a customer, the Customer Agent queries `memory_service.get_customer_memories()`, incorporating past risk observations, policy outcomes, and previous decisions into the fraud evaluation.
+
+---
+
+## 5. REST API Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -105,63 +79,38 @@ SQLite Database (SQLAlchemy ORM models)
 | `POST` | `/api/returns` | Create a new return investigation case |
 | `POST` | `/api/returns/{case_id}/evidence` | Upload evidence image/file for a case |
 | `PATCH` | `/api/returns/{case_id}` | Update status, risk level, or decision text |
+| `POST` | `/api/returns/{case_id}/investigate` | Step 2/3: Trigger LangGraph Multi-Agent Investigation |
+| `GET` | `/api/returns/{case_id}/results` | Step 2/3: Retrieve saved historical agent execution logs |
+| `GET` | `/api/customers/{customer_id}/memories` | **Step 3**: Retrieve customer persistent memories |
+| `GET` | `/api/returns/{case_id}/memories` | **Step 3**: Retrieve case persistent memories |
+| `POST` | `/api/rag/reindex` | **Step 3**: Force re-indexing of `return_policy.md` into ChromaDB |
 
 ---
 
-## 5. Frontend Structure
+## 6. How to Run the Project Locally
 
-```
-frontend/
-├── src/
-│   ├── components/
-│   │   ├── Sidebar.jsx       # Operations navigation sidebar
-│   │   ├── Navbar.jsx        # Top bar with real-time backend health polling
-│   │   ├── StatusBadge.jsx   # Color-coded status & risk badges
-│   │   ├── MetricCard.jsx    # Metric statistic cards
-│   │   └── Timeline.jsx      # Investigation timeline (Step 1 + Step 2 AI stages)
-│   ├── pages/
-│   │   ├── Dashboard.jsx            # High-level stats & recent investigations table
-│   │   ├── Investigations.jsx       # Filterable & searchable investigation directory
-│   │   ├── InvestigationDetail.jsx  # Detailed case file, evidence gallery, timeline
-│   │   └── NewInvestigation.jsx     # Claim submission form with image uploader
-│   ├── services/
-│   │   └── api.js            # Axios client wrappers for all REST endpoints
-│   ├── App.jsx               # Application routes
-│   ├── main.jsx              # React DOM mounting
-│   └── index.css             # Tailwind imports & dark enterprise styling
-├── package.json
-└── vite.config.js
-```
-
----
-
-## 6. How to Run the Project locally
-
-### Backend Setup (FastAPI)
+### Backend Setup (FastAPI + ChromaDB RAG + Memory)
 
 ```bash
 # 1. Navigate to backend directory
 cd backend
 
-# 2. Create virtual environment
-python -m venv venv
-
-# 3. Activate virtual environment
+# 2. Activate virtual environment
 # On Windows PowerShell:
 .\venv\Scripts\Activate.ps1
 # On Linux/macOS:
 source venv/bin/activate
 
-# 4. Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 5. Seed database (creates SQLite DB & loads 5 customers, 10 products, 15 orders, 5 return cases)
-python app/seed.py
+# 4. Run automated Step 3 RAG & Memory test suite
+python test_step3_rag_memory.py
 
-# 6. Run FastAPI application
+# 5. Run FastAPI backend
 uvicorn app.main:app --reload --port 8000
 ```
-Backend API will be live at `http://localhost:8000` (API Docs at `http://localhost:8000/docs`).
+Backend API docs available at `http://localhost:8000/docs`.
 
 ### Frontend Setup (React + Vite)
 
@@ -169,58 +118,10 @@ Backend API will be live at `http://localhost:8000` (API Docs at `http://localho
 # 1. Navigate to frontend directory
 cd frontend
 
-# 2. Install dependencies
-npm install
+# 2. Install dependencies & build check
+npm run build
 
-# 3. Start Vite development server
+# 3. Run development server
 npm run dev
 ```
-Frontend Dashboard will open at `http://localhost:5173`.
-
----
-
-## 7. What is Intentionally NOT Implemented in Step 1
-
-To keep Step 1 focused purely on clean architectural foundation:
-- ❌ No LLM or VLM calls (OpenAI, Gemini, Claude, etc.)
-- ❌ No LangGraph orchestrator or autonomous multi-agent loops
-- ❌ No Vector database or RAG policy document search
-- ❌ No external payment / refund API triggers (Stripe, Shopify)
-
-The timeline UI explicitly marks AI stages as **"Step 2+ Coming Soon"**.
-
----
-
-## 8. How this Foundation Supports Future AI Agents
-
-In Step 2+, we will attach LangGraph / LangChain autonomous agents. Each agent will directly call the service functions created in `app/services/investigation_service.py` as structured tools:
-
-1. **Vision Agent**: Calls `get_return_case()` to inspect image evidence at `file_path`.
-2. **Order Agent**: Calls `get_order_details()` to inspect delivery timestamps and return windows.
-3. **Policy / RAG Agent**: Calls `get_product_details()` to evaluate warranty and refund policy rules.
-4. **Fraud Agent**: Calls `get_customer_history()` & `get_customer_return_history()` to detect serial return abuse.
-5. **Decision Agent**: Synthesizes agent reports and invokes `add_investigation_result()` or `update_return_case()`.
-
----
-
-## 9. Testing API Endpoints
-
-You can verify the backend APIs anytime by running the automated test script:
-
-```bash
-cd backend
-python test_api.py
-```
-
-Or manually via `curl`:
-
-```bash
-# Health Check
-curl http://localhost:8000/api/health
-
-# List Returns
-curl http://localhost:8000/api/returns
-
-# View Specific Return Case
-curl http://localhost:8000/api/returns/1
-```
+Frontend Dashboard available at `http://localhost:5173`.

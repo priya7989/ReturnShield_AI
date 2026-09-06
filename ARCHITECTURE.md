@@ -1,105 +1,65 @@
 # ReturnShield AI — System Architecture
 
-This document describes the architectural roadmap of **ReturnShield AI**, from the foundational infrastructure built in **Step 1** to the multi-agent AI investigation system coming in **Step 2+**.
+This document describes the architectural evolution of **ReturnShield AI**, highlighting the **Step 3 Proper RAG + Persistent Memory Architecture**.
 
 ---
 
-## 1. Step 1 Architecture (Current Foundation)
-
-In Step 1, the system establishes a robust, type-safe data model, service layer, REST endpoints, and an operational dashboard for human supervisors.
+## 1. Step 3 Architecture (RAG + Persistent Memory Integration)
 
 ```mermaid
 graph TD
-    User["Customer / Store Operations"] -->|Submits Claim & Evidence| ReactFE["React Dashboard (Vite + Tailwind CSS)"]
-    ReactFE -->|REST API Calls| FastAPI["FastAPI Backend (Python 3.10+)"]
+    User["Customer / Admin Supervisor"] -->|1. Click 'Start AI Investigation'| ReactFE["React Dashboard (Vite + Tailwind CSS)"]
+    ReactFE -->|2. POST /api/returns/{case_id}/investigate| FastAPI["FastAPI Backend App"]
     
-    subgraph FastAPI Backend Layer
-        FastAPI -->|Routes| ReturnsAPI["/api/returns Routes"]
-        FastAPI -->|Routes| OrdersAPI["/api/orders Routes"]
-        FastAPI -->|Routes| CustAPI["/api/customers Routes"]
-        FastAPI -->|Routes| ProdAPI["/api/products Routes"]
+    subgraph FastAPI Backend & LangGraph Orchestrator
+        FastAPI -->|Invokes Workflow| Orchestrator["LangGraph Orchestrator (graph.py)"]
         
-        ReturnsAPI -->|Uses| ServiceLayer["Service Layer (investigation_service.py)"]
-        OrdersAPI -->|Uses| ServiceLayer
-        CustAPI -->|Uses| ServiceLayer
-        ProdAPI -->|Uses| ServiceLayer
+        subgraph LangGraph Execution Pipeline
+            Orchestrator --> OrderAgent["Order Agent"]
+            OrderAgent --> CustomerAgent["Customer Agent"]
+            CustomerAgent --> PolicyAgent["Policy Agent"]
+            PolicyAgent --> FraudAgent["Fraud Agent"]
+            FraudAgent --> RiskAgent["Risk Agent"]
+            RiskAgent --> DecisionAgent["Decision Agent"]
+        end
         
-        FastAPI -->|Static File Server| UploadsFolder["/uploads Directory (Local Evidence Storage)"]
+        CustomerAgent -->|Queries Persistent Memory| MemService["Memory Service (memory_service.py)"]
+        PolicyAgent -->|Queries Vector Context| RAGRetriever["RAG Retriever (retriever.py)"]
     end
     
-    ServiceLayer -->|ORM Operations| Database[("SQLite / PostgreSQL Database")]
+    RAGRetriever -->|Semantic Similarity Search| ChromaDB[("ChromaDB Vector Store (./chroma_db)")]
+    MemService -->|SQL Queries| Database[("SQLite Database (investigation_memories)")]
     
-    subgraph Database Entities
-        Database --- Customer["Customer Entity"]
-        Database --- Product["Product Entity"]
-        Database --- Order["Order Entity"]
-        Database --- ReturnCase["ReturnCase Entity"]
-        Database --- Evidence["Evidence Entity"]
-    end
-```
-
-### Data Flow in Step 1
-1. **Claim Submission**: Customer or admin submits order ID, return reason, complaint description, and optional evidence photos via the **New Investigation** form.
-2. **Case Creation**: The backend generates a unique case ID (e.g. `RET-2026-0001-A9F1`), records the claim in SQLite, and saves uploaded evidence photos to `/uploads`.
-3. **Dashboard Monitoring**: Operations supervisors inspect recent claims, view entity relationships (Customer, Order, Product details), check evidence images, and override case statuses manually.
-
----
-
-## 2. Step 2+ Architecture (Future Autonomous AI Agent Roadmap)
-
-In Step 2 and beyond, an autonomous multi-agent engine will sit between FastAPI and the database service layer to investigate claims autonomously.
-
-```mermaid
-graph TD
-    User["Customer Request"] -->|POST /api/returns| FastAPI["FastAPI Backend"]
-    FastAPI -->|Triggers Investigation| Orchestrator["Agent Orchestrator (LangGraph)"]
-    
-    subgraph Agentic AI Investigation Core
-        Orchestrator --> VisionAgent["1. Vision Agent (VLM / Gemini Vision)"]
-        Orchestrator --> OrderAgent["2. Order Agent"]
-        Orchestrator --> PolicyAgent["3. Policy / RAG Agent"]
-        Orchestrator --> FraudAgent["4. Fraud & Serial Returner Agent"]
-        Orchestrator --> RiskAgent["5. Risk Assessment Agent"]
-        
-        VisionAgent -->|Inspects Image Evidence| ServiceTools
-        OrderAgent -->|Checks Purchase & Delivery Dates| ServiceTools
-        PolicyAgent -->|Queries Store Policy Docs / RAG| VectorDB[("ChromaDB Vector Store")]
-        FraudAgent -->|Analyzes Customer Return History| ServiceTools
-        RiskAgent -->|Synthesizes Fraud Signals| DecisionAgent["6. Decision Agent"]
-    end
-    
-    subgraph Service Tools Layer
-        ServiceTools["Service Layer Tools (app/services/investigation_service.py)"]
-        ServiceTools --> DB[("Database")]
-    end
-    
-    DecisionAgent -->|Calculates Confidence Score| Evaluation{"Confidence >= 85%?"}
-    
-    Evaluation -->|Yes| ActionAgent["7. Action Agent"]
-    Evaluation -->|No / High Risk| Escalation["Escalate to Human Supervisor"]
-    
-    ActionAgent -->|Auto-Approve Refund| ExternalAPIs["Shopify / Stripe API & Shipping Label Gen"]
-    Escalation -->|Flagged in Dashboard| ReactFE["Human Supervisor Review in Dashboard"]
+    DecisionAgent -->|Saves Investigation Memory| MemService
+    DecisionAgent -->|Saves Agent Outputs| Database
+    FastAPI -->|Returns JSON Payload with RAG & Memory Context| ReactFE
 ```
 
 ---
 
-## 3. Tool Mapping for Future Agents
+## 2. Interview-Quality Architectural Concepts
 
-The service functions created in `backend/app/services/investigation_service.py` are mapped to future agents as follows:
+### Why RAG for Policy Retrieval?
+Return policies can be long, detailed, and subject to updates across product categories. RAG allows the system to semantically query and inject only the most relevant 3-4 policy passages into the Policy Agent context, keeping token usage low and preventing hallucinations without hard-coding rules.
 
-| Agent | Service Function / Tool | Purpose |
-| :--- | :--- | :--- |
-| **Vision Agent** | `get_return_case()` | Access evidence file paths and inspect image pixels for damage/fraud |
-| **Order Agent** | `get_order_details()` | Validate order delivery date, return window eligibility, and item cost |
-| **Policy / RAG Agent** | `get_product_details()` | Retrieve warranty terms and product category return rules |
-| **Fraud Agent** | `get_customer_history()`, `get_customer_return_history()` | Scan historical return frequency, claim total value, and abuse patterns |
-| **Decision Agent** | `add_investigation_result()` | Record structured agent findings and risk scores |
-| **Action Agent** | `update_return_case()` | Update status to Approved/Rejected and issue refund payload |
+### Why Persistent Memory?
+A return investigation system must maintain long-term memory across multiple return claims for a single customer. Without persistent memory, an abuser could repeatedly submit claims without the system remembering previous recommendations or risk flags.
+
+### Difference Between LangGraph State and Persistent Memory
+- **LangGraph State (`InvestigationState`)**: Ephemeral, in-memory dictionary passed between agent nodes during the execution of a single return case investigation.
+- **Persistent Memory (`InvestigationMemory`)**: Durable database records saved in SQLite that persist across application restarts, allowing future investigations to recall past decisions, return patterns, and risk observations.
 
 ---
 
-## 4. Key Security & Operational Controls
-- **Auditability**: Every decision (autonomous or human override) is recorded in `return_cases`.
-- **Human-in-the-Loop**: High-risk or ambiguous cases are escalated to the `Needs Human Review` status for supervisor override in the dashboard.
-- **Strict Separation**: Foundation endpoints remain 100% operational with or without AI agent runtime active.
+## 3. Data Flow Step-by-Step
+
+1. **Trigger**: User clicks **"Start AI Investigation"** on `InvestigationDetail.jsx`.
+2. **API Call**: React calls `POST /api/returns/{case_id}/investigate`.
+3. **State Initialization**: Orchestrator builds `InvestigationState`.
+4. **Order Agent**: Queries `get_order_details()` -> computes `days_since_delivery`.
+5. **Customer Agent**: Queries database history AND queries `memory_service.get_customer_memories()` -> retrieves past risk observations.
+6. **Policy Agent (RAG)**: Formulates query (e.g. `"Return policy for damaged smartphone delivered 3 days ago"`) -> queries ChromaDB vector store -> retrieves top 4 policy passages -> evaluates eligibility.
+7. **Fraud Agent**: Evaluates return ratio, order value, and recent claim frequency -> computes behavioral risk score.
+8. **Risk Agent**: Computes composite risk score (0-100) and risk level (`LOW`, `MEDIUM`, `HIGH`).
+9. **Decision Agent**: Synthesizes eligibility + risk -> outputs recommendation (`APPROVE_REPLACEMENT`, `APPROVE_REFUND`, `REJECT`, `HUMAN_REVIEW`) -> saves concise memory record via `memory_service.save_memory()`.
+10. **UI Render**: React displays Policy Evidence widget (retrieved chunks, source citations), Customer Memory widget, and agent execution cards.

@@ -9,10 +9,11 @@ Fraud Agent, Risk Agent, etc.) in Step 2 and beyond.
 
 import uuid
 import os
+import json
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
-from app.models import Customer, Product, Order, ReturnCase, Evidence
+from app.models import Customer, Product, Order, ReturnCase, Evidence, InvestigationResult
 from app.schemas.return_case import ReturnCaseCreate, ReturnCaseUpdate
 
 
@@ -205,3 +206,34 @@ def list_all_returns(
         query = query.filter(ReturnCase.risk_level == risk_level)
 
     return query.order_by(ReturnCase.created_at.desc()).all()
+
+
+def save_agent_result(
+    db: Session,
+    case_id: int,
+    agent_name: str,
+    result_dict: dict,
+    status: str = "completed"
+) -> InvestigationResult:
+    """
+    Store per-agent execution logs and outputs in the database for observability.
+    """
+    res = InvestigationResult(
+        return_case_id=case_id,
+        agent_name=agent_name,
+        status=status,
+        result_json=json.dumps(result_dict, default=str)
+    )
+    db.add(res)
+    db.commit()
+    db.refresh(res)
+    return res
+
+
+def get_case_investigation_results(db: Session, case_id: int) -> List[InvestigationResult]:
+    """
+    Retrieve historical agent execution outputs for a specific return case.
+    """
+    return db.query(InvestigationResult).filter(
+        InvestigationResult.return_case_id == case_id
+    ).order_by(InvestigationResult.created_at.asc()).all()

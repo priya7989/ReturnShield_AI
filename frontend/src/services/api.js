@@ -66,4 +66,29 @@ export const updateReturn = async (caseId, updatePayload) => {
   return response.data;
 };
 
+export const runInvestigation = async (caseId) => {
+  const response = await api.post(`/api/returns/${caseId}/investigate`);
+  return response.data;
+};
+
+export const getAgentResults = async (caseId) => {
+  const response = await api.get(`/api/returns/${caseId}/results`);
+  return response.data;
+};
+
+export const getCustomerMemories = async (customerId) => {
+  const response = await api.get(`/api/customers/${customerId}/memories`);
+  return response.data;
+};
+
+export const getCaseMemories = async (caseId) => {
+  const response = await api.get(`/api/returns/${caseId}/memories`);
+  return response.data;
+};
+
+export const reindexPolicyRAG = async () => {
+  const response = await api.post('/api/rag/reindex');
+  return response.data;
+};
+
 export default api;
